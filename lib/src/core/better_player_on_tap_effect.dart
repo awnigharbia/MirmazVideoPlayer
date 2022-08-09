@@ -19,7 +19,7 @@ class OnTapClickState extends State<OnTapClick> with TickerProviderStateMixin {
   void initState() {
     _controllerA = AnimationController(
       vsync: this,
-      lowerBound: 0.7,
+      lowerBound: 0.85,
       upperBound: 1.0,
       value: 1,
       duration: const Duration(milliseconds: 50),
@@ -44,7 +44,7 @@ class OnTapClickState extends State<OnTapClick> with TickerProviderStateMixin {
         _controllerA.reverse();
       },
       onTapUp: (dp) {
-        Timer(const Duration(milliseconds: 100), () {
+        Timer(const Duration(milliseconds: 50), () {
           _controllerA.fling();
         });
       },

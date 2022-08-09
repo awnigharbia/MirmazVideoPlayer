@@ -12,6 +12,7 @@ import 'package:better_player/src/core/better_player_utils.dart';
 import 'package:better_player/src/video_player/video_player.dart';
 // Flutter imports:
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:quds_popup_menu/quds_popup_menu.dart';
 
 import '../core/better_player_on_tap_effect.dart';
@@ -248,6 +249,10 @@ class _BetterPlayerMaterialControlsState
           OnTapClick(
             onTap: () {
               Navigator.pop(context);
+              SystemChrome.setPreferredOrientations([
+                DeviceOrientation.portraitDown,
+                DeviceOrientation.portraitUp,
+              ]);
             },
             child: ClipRRect(
               borderRadius: BorderRadius.circular(50),
