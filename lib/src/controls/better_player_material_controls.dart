@@ -600,7 +600,8 @@ class _BetterPlayerMaterialControlsState
 
   Widget _buildExpandButton() {
     return Padding(
-      padding: EdgeInsets.only(right: 32.0),
+      padding: EdgeInsets.only(
+          right: _betterPlayerController!.isFullScreen ? 24.0 : 8.0),
       child: BetterPlayerMaterialClickableWidget(
         onTap: _onExpandCollapse,
         child: AnimatedOpacity(
@@ -889,9 +890,10 @@ class _BetterPlayerMaterialControlsState
         : Duration.zero;
 
     return Padding(
-      padding: _controlsConfiguration.enablePlayPause
-          ? const EdgeInsets.symmetric(horizontal: 15)
-          : const EdgeInsets.symmetric(horizontal: 32),
+      padding: EdgeInsets.only(
+        left: _betterPlayerController!.isFullScreen ? 24 : 8.0,
+        right: 8.0,
+      ),
       child: RichText(
         text: TextSpan(
             text: BetterPlayerUtils.formatDuration(position),
