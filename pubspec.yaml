@@ -21,7 +21,7 @@ dependencies:
   visibility_detector: ^0.2.2
   path_provider: ^2.0.8
   collection: ^1.15.0
-  xml: ^4.2.0
+  xml: 
   quds_popup_menu: ^0.0.1+1
 
 dev_dependencies:
