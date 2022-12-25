@@ -64,6 +64,7 @@ class _BetterPlayerState extends State<BetterPlayer>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    Wakelock.enable();
   }
 
   @override
