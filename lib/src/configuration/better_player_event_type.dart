@@ -25,10 +25,4 @@ enum BetterPlayerEventType {
   bufferingUpdate,
   bufferingEnd,
   changedPlaylistItem,
-  openPopover,
-  closePopover,
-  openPlaybackSpeedPopover,
-  closePlaybackSpeedPopover,
-  openPlaybackQualityPopover,
-  closePlaybackQualityPopover,
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:better_player/better_player.dart';
 import 'package:better_player/src/configuration/better_player_controller_event.dart';
 import 'package:better_player/src/core/better_player_utils.dart';
@@ -154,10 +155,6 @@ class _BetterPlayerState extends State<BetterPlayer>
     } else if (_isFullScreen) {
       Navigator.of(context, rootNavigator: true).pop();
       _isFullScreen = false;
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitDown,
-        DeviceOrientation.portraitUp,
-      ]);
       controller
           .postEvent(BetterPlayerEvent(BetterPlayerEventType.hideFullscreen));
     }
@@ -232,12 +229,16 @@ class _BetterPlayerState extends State<BetterPlayer>
       if (aspectRatio < 1.0) {
         deviceOrientations = [
           DeviceOrientation.portraitUp,
-          DeviceOrientation.portraitDown
+          DeviceOrientation.portraitDown,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
         ];
       } else {
         deviceOrientations = [
           DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight
+          DeviceOrientation.landscapeRight,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
         ];
       }
       await SystemChrome.setPreferredOrientations(deviceOrientations);

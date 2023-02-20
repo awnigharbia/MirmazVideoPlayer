@@ -128,9 +128,6 @@ class BetterPlayerControlsConfiguration {
   ///Icon of the playback speed menu item from overflow menu
   final IconData playbackSpeedIcon;
 
-  /// Icon of back button
-  final IconData backIcon;
-
   ///Icon of the subtitles menu item from overflow menu
   final IconData subtitlesIcon;
 
@@ -164,24 +161,13 @@ class BetterPlayerControlsConfiguration {
   ///Color of text in bottom modal sheet used for overflow menu items.
   final Color overflowModalTextColor;
 
-  /// bool for enable back button
-  final bool enableBackButton;
+  final Widget? watermark;
 
-  /// bool for enable maximize button
-  final bool enableMaximizeButton;
-
-  /// watermark to be displayed on top of the video
-  final Widget watermark;
-
-  /// title
-  final String? title;
-
-  /// subtitle
-  final String? subtitle;
+  final Widget? fullScreenWatermark;
 
   const BetterPlayerControlsConfiguration({
     this.controlBarColor = Colors.black87,
-    this.textColor = Colors.black87,
+    this.textColor = Colors.white,
     this.iconsColor = Colors.white,
     this.playIcon = Icons.play_arrow_outlined,
     this.pauseIcon = Icons.pause_outlined,
@@ -193,7 +179,6 @@ class BetterPlayerControlsConfiguration {
     this.skipForwardIcon = Icons.forward_10_outlined,
     this.enableFullscreen = true,
     this.enableMute = true,
-    this.backIcon = Icons.arrow_back_ios,
     this.enableProgressText = true,
     this.enableProgressBar = true,
     this.enableProgressBarDrag = true,
@@ -202,14 +187,14 @@ class BetterPlayerControlsConfiguration {
     this.enableAudioTracks = true,
     this.progressBarPlayedColor = Colors.white,
     this.progressBarHandleColor = Colors.white,
-    this.progressBarBufferedColor = Colors.grey,
+    this.progressBarBufferedColor = Colors.white70,
     this.progressBarBackgroundColor = Colors.white60,
     this.controlsHideTime = const Duration(milliseconds: 300),
     this.customControlsBuilder,
     this.playerTheme,
     this.showControls = true,
     this.showControlsOnInitialize = true,
-    this.controlBarHeight = 35.0,
+    this.controlBarHeight = 48.0,
     this.liveTextColor = Colors.red,
     this.enableOverflowMenu = true,
     this.enablePlaybackSpeed = true,
@@ -232,11 +217,8 @@ class BetterPlayerControlsConfiguration {
     this.backgroundColor = Colors.black,
     this.overflowModalColor = Colors.white,
     this.overflowModalTextColor = Colors.black,
-    this.enableBackButton = true,
-    this.enableMaximizeButton = false,
     this.watermark = const SizedBox.shrink(),
-    this.title,
-    this.subtitle,
+    this.fullScreenWatermark = const SizedBox.shrink(),
   });
 
   factory BetterPlayerControlsConfiguration.white() {

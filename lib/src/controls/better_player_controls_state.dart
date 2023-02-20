@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:math';
+
 import 'package:better_player/better_player.dart';
 import 'package:better_player/src/controls/better_player_clickable_widget.dart';
 import 'package:better_player/src/core/better_player_utils.dart';
@@ -445,9 +446,9 @@ abstract class BetterPlayerControlsState<T extends StatefulWidget>
   }
 
   void _showModalBottomSheet(List<Widget> children) {
-    // Platform.isAndroid
-    _showMaterialBottomSheet(children);
-    // : _showCupertinoModalBottomSheet(children);
+    Platform.isAndroid
+        ? _showMaterialBottomSheet(children)
+        : _showCupertinoModalBottomSheet(children);
   }
 
   void _showCupertinoModalBottomSheet(List<Widget> children) {

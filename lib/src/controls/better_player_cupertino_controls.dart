@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:better_player/src/configuration/better_player_controls_configuration.dart';
 import 'package:better_player/src/controls/better_player_controls_state.dart';
 import 'package:better_player/src/controls/better_player_cupertino_progress_bar.dart';
@@ -84,24 +85,32 @@ class _BetterPlayerCupertinoControlsState
     final isFullScreen = _betterPlayerController?.isFullScreen == true;
 
     _wasLoading = isLoading(_latestValue);
-    final controlsColumn = Column(children: <Widget>[
-      _buildTopBar(
-        backgroundColor,
-        iconColor,
-        barHeight,
-        buttonPadding,
-      ),
-      if (_wasLoading)
-        Expanded(child: Center(child: _buildLoadingWidget()))
-      else
-        _buildHitArea(),
-      _buildNextVideoWidget(),
-      _buildBottomBar(
-        backgroundColor,
-        iconColor,
-        barHeight,
-      ),
-    ]);
+    final controlsColumn = Stack(
+      children: [
+        betterPlayerControlsConfiguration.fullScreenWatermark ??
+            SizedBox.shrink(),
+        Column(
+          children: <Widget>[
+            _buildTopBar(
+              backgroundColor,
+              iconColor,
+              barHeight,
+              buttonPadding,
+            ),
+            if (_wasLoading)
+              Expanded(child: Center(child: _buildLoadingWidget()))
+            else
+              _buildHitArea(),
+            _buildNextVideoWidget(),
+            _buildBottomBar(
+              backgroundColor,
+              iconColor,
+              barHeight,
+            ),
+          ],
+        ),
+      ],
+    );
     return GestureDetector(
       onTap: () {
         if (BetterPlayerMultipleGestureDetector.of(context) != null) {

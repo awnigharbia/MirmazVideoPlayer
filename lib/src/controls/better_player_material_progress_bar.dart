@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:better_player/better_player.dart';
 import 'package:better_player/src/video_player/video_player.dart';
 import 'package:better_player/src/video_player/video_player_platform_interface.dart';
@@ -249,17 +250,10 @@ class _ProgressBarPainter extends CustomPainter {
       ),
       colors.playedPaint,
     );
-    
     canvas.drawCircle(
       Offset(playedPart, size.height / 2 + height / 2),
       height * 3,
-      Paint()..color = Colors.white,
-    );
-
-    canvas.drawCircle(
-      Offset(playedPart, size.height / 2 + height / 2),
-      height * 2,
-      Paint()..color = Color(0xFFFFC947),
+      colors.handlePaint,
     );
   }
 }

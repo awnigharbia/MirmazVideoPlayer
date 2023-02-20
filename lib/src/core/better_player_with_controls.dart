@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+
 import 'package:better_player/better_player.dart';
 import 'package:better_player/src/configuration/better_player_controller_event.dart';
 import 'package:better_player/src/controls/better_player_cupertino_controls.dart';
@@ -9,6 +10,7 @@ import 'package:better_player/src/core/better_player_utils.dart';
 import 'package:better_player/src/subtitles/better_player_subtitles_drawer.dart';
 import 'package:better_player/src/video_player/video_player.dart';
 import 'package:flutter/material.dart';
+import 'package:transparent_pointer/transparent_pointer.dart';
 
 class BetterPlayerWithControls extends StatefulWidget {
   final BetterPlayerController? controller;
@@ -91,8 +93,12 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
     }
 
     aspectRatio ??= 16 / 9;
+    bool isFullScreen = betterPlayerController.isFullScreen;
     final innerContainer = Container(
       width: double.infinity,
+      padding:
+          isFullScreen ? EdgeInsets.only(bottom: 32) : EdgeInsets.only(top: 0),
+      height: isFullScreen ? 1000 : null,
       color: betterPlayerController
           .betterPlayerConfiguration.controlsConfiguration.backgroundColor,
       child: AspectRatio(
@@ -130,11 +136,13 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
         fit: StackFit.passthrough,
         children: <Widget>[
           if (placeholderOnTop) _buildPlaceholder(betterPlayerController),
-          Transform.rotate(
-            angle: rotation * pi / 180,
-            child: _BetterPlayerVideoFitWidget(
-              betterPlayerController,
-              betterPlayerController.getFit(),
+          InteractiveViewer(
+            child: Transform.rotate(
+              angle: rotation * pi / 180,
+              child: _BetterPlayerVideoFitWidget(
+                betterPlayerController,
+                betterPlayerController.getFit(),
+              ),
             ),
           ),
           betterPlayerController.betterPlayerConfiguration.overlay ??
@@ -146,8 +154,10 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
             playerVisibilityStream: playerVisibilityStreamController.stream,
           ),
           if (!placeholderOnTop) _buildPlaceholder(betterPlayerController),
-          _buildControls(context, betterPlayerController),
-          controlsConfiguration.watermark,
+          TransparentPointer(
+            transparent: true,
+            child: _buildControls(context, betterPlayerController),
+          ),
         ],
       ),
     );
@@ -180,7 +190,7 @@ class _BetterPlayerWithControlsState extends State<BetterPlayerWithControls> {
       } else if (playerTheme == BetterPlayerTheme.material) {
         return _buildMaterialControl();
       } else if (playerTheme == BetterPlayerTheme.cupertino) {
-        return _buildMaterialControl();
+        return _buildCupertinoControl();
       }
     }
 
@@ -303,14 +313,13 @@ class _BetterPlayerVideoFitWidgetState
         child: ClipRect(
           child: Container(
             width: double.infinity,
-            height: double.infinity,
+            // height: controller!.value.size?.height,
             child: FittedBox(
-              fit: widget.boxFit,
+              fit: BoxFit.fitHeight,
               child: SizedBox(
-                width: controller!.value.size?.width ?? 0,
-                height: controller!.value.size?.height ?? 0,
-                child: VideoPlayer(controller),
-              ),
+                  width: controller!.value.size?.width ?? 0,
+                  height: controller!.value.size?.height ?? 0,
+                  child: VideoPlayer(controller)),
             ),
           ),
         ),
