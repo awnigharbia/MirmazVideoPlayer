@@ -490,7 +490,23 @@ internal class BetterPlayer(
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                eventSink.error("VideoError", "Video player had error $error", "")
+                // Surface the real cause chain: ExoPlayer's own message is just
+                // "Source error"; the HTTP status / IOException lives in causes.
+                val details = StringBuilder()
+                details.append("code=").append(error.errorCodeName)
+                var cause: Throwable? = error.cause
+                var depth = 0
+                while (cause != null && depth < 5) {
+                    details.append(" <- ").append(cause.javaClass.simpleName)
+                    if (cause is com.google.android.exoplayer2.upstream.HttpDataSource.InvalidResponseCodeException) {
+                        details.append("(http ").append(cause.responseCode).append(")")
+                    } else if (!cause.message.isNullOrBlank()) {
+                        details.append("(").append(cause.message).append(")")
+                    }
+                    cause = cause.cause
+                    depth++
+                }
+                eventSink.error("VideoError", "Video player had error $error", details.toString())
             }
         })
         val reply: MutableMap<String, Any> = HashMap()
