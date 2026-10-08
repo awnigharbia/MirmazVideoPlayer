@@ -620,6 +620,23 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
     return _videoPlayerPlatform.isPictureInPictureEnabled(_textureId);
   }
 
+  /// Enables or disables frame capture of the video. Waits until the player
+  /// is created, so it can be called right after constructing [this].
+  Future<void> setFrameCaptureEnabled(bool enabled) async {
+    if (!_creatingCompleter.isCompleted) await _creatingCompleter.future;
+    await _videoPlayerPlatform.setFrameCaptureEnabled(_textureId, enabled);
+  }
+
+  /// Captures currently displayed video frame as JPEG bytes. Returns null
+  /// when the player is not created yet. [watermarkText] is drawn on the
+  /// image when provided.
+  Future<Uint8List?> captureFrame({String? watermarkText}) async {
+    if (_textureId == null) {
+      return null;
+    }
+    return _videoPlayerPlatform.captureFrame(_textureId, watermarkText);
+  }
+
   void refresh() {
     value = value.copyWith();
   }

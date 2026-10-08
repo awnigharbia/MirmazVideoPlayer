@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #import "BetterPlayer.h"
+#import <CoreImage/CoreImage.h>
 #import <better_player/better_player-Swift.h>
 
 static void* timeRangeContext = &timeRangeContext;
@@ -18,6 +19,45 @@ void (^__strong _Nonnull _restoreUserInterfaceForPIPStopCompletionHandler)(BOOL)
 API_AVAILABLE(ios(9.0))
 AVPictureInPictureController *_pipController;
 #endif
+
+static NSString* const kFrameCaptureErrorUnsupported = @"unsupported";
+static NSString* const kFrameCaptureErrorProtectedContent = @"protected_content";
+static NSString* const kFrameCaptureErrorCopyFailed = @"copy_failed";
+static NSString* const kFrameCaptureErrorUnavailable = @"unavailable";
+// How long a capture waits for the video output to deliver a frame before giving up.
+static const NSTimeInterval kFrameCaptureFrameTimeout = 1.0;
+// A cached frame further than this from the playhead is no longer the one on screen.
+static const NSTimeInterval kFrameCaptureCachedFrameTolerance = 0.5;
+static const CGFloat kFrameCaptureJpegQuality = 0.9;
+// Watermark metrics, kept identical to the Android implementation.
+static const CGFloat kFrameCaptureWatermarkAlpha = 0.45;
+static const CGFloat kFrameCaptureWatermarkMinFontSize = 14;
+static const CGFloat kFrameCaptureWatermarkFontRatio = 0.035;
+
+static FlutterError* FrameCaptureError(NSString* code, NSString* message) {
+    return [FlutterError errorWithCode:code message:message details:nil];
+}
+
+@interface BetterPlayer () <AVPlayerItemOutputPullDelegate> {
+    BOOL _frameCaptureEnabled;
+    BOOL _isFairPlayProtected;
+    AVPlayerItemVideoOutput* _videoOutput;
+    AVPlayerItem* _videoOutputItem;
+    // Last frame vended by the video output. A Core Foundation object, so it is retained and
+    // released by hand.
+    CVPixelBufferRef _lastPixelBuffer;
+    CMTime _lastPixelBufferTime;
+    dispatch_queue_t _captureQueue;
+    CIContext* _captureContext;
+    // The capture in flight: non-nil reply block from the request until the reply.
+    FlutterResult _captureResult;
+    NSString* _captureWatermark;
+    BOOL _captureAwaitingFrame;
+    // Identifies the capture in flight so a late timeout or render of an older one is ignored.
+    NSUInteger _captureGeneration;
+}
+- (CVPixelBufferRef)copyCurrentPixelBuffer CF_RETURNS_RETAINED;
+@end
 
 @implementation BetterPlayer
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -74,6 +114,7 @@ AVPictureInPictureController *_pipController;
     _disposed = false;
     _failedCount = 0;
     _key = nil;
+    [self detachVideoOutput];
     if (_player.currentItem == nil) {
         return;
     }
@@ -197,6 +238,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 
 - (void)setDataSourceURL:(NSURL*)url withKey:(NSString*)key withCertificateUrl:(NSString*)certificateUrl withLicenseUrl:(NSString*)licenseUrl withHeaders:(NSDictionary*)headers withCache:(BOOL)useCache cacheKey:(NSString*)cacheKey cacheManager:(CacheManager*)cacheManager overriddenDuration:(int) overriddenDuration videoExtension: (NSString*) videoExtension{
     _overriddenDuration = 0;
+    _isFairPlayProtected = false;
     if (headers == [NSNull null] || headers == NULL){
         headers = @{};
     }
@@ -221,6 +263,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
             dispatch_queue_attr_t qos = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_DEFAULT, -1);
             dispatch_queue_t streamQueue = dispatch_queue_create("streamQueue", qos);
             [asset.resourceLoader setDelegate:_loaderDelegate queue:streamQueue];
+            _isFairPlayProtected = true;
         }
         item = [AVPlayerItem playerItemWithAsset:asset];
     }
@@ -236,6 +279,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     _stalledCount = 0;
     _isStalledCheckStarted = false;
     _playerRate = 1;
+    [self detachVideoOutput];
     [_player replaceCurrentItemWithPlayerItem:item];
 
     AVAsset* asset = [item asset];
@@ -473,6 +517,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
         }
 
         _isInitialized = true;
+        [self attachVideoOutputIfNeeded];
         [self updatePlayingState];
         _eventSink(@{
             @"event" : @"initialized",
@@ -756,6 +801,346 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     [self disablePictureInPicture];
     [self setPictureInPicture:false];
     _disposed = true;
+}
+
+#pragma mark - Frame capture
+
+- (void)dealloc {
+    CVPixelBufferRelease(_lastPixelBuffer);
+}
+
+- (void)setFrameCaptureEnabled:(BOOL)enabled {
+    _frameCaptureEnabled = enabled;
+    if (enabled) {
+        [self attachVideoOutputIfNeeded];
+    } else {
+        [self detachVideoOutput];
+    }
+}
+
+- (void)attachVideoOutputIfNeeded {
+    AVPlayerItem* item = _player.currentItem;
+    if (!_frameCaptureEnabled || _videoOutput != nil || !_isInitialized || item == nil) {
+        return;
+    }
+    // No pixel buffer attributes: the output vends frames in the decoder's native format.
+    // Asking for BGRA would convert every decoded frame for as long as the output stays
+    // attached, while a capture only ever needs one of them.
+    _videoOutput = [[AVPlayerItemVideoOutput alloc] initWithPixelBufferAttributes:nil];
+    [_videoOutput setDelegate:self queue:dispatch_get_main_queue()];
+    [item addOutput:_videoOutput];
+    _videoOutputItem = item;
+}
+
+/// Safe to call when nothing is attached. The enabled flag is left alone so the next item
+/// gets an output again.
+- (void)detachVideoOutput {
+    [self finishCapture:_captureGeneration
+              withValue:FrameCaptureError(kFrameCaptureErrorUnavailable,
+                                          @"The video changed before the frame was captured")];
+    if (_videoOutput != nil) {
+        [_videoOutput setDelegate:nil queue:NULL];
+        if ([_videoOutputItem.outputs containsObject:_videoOutput]) {
+            [_videoOutputItem removeOutput:_videoOutput];
+        }
+        _videoOutput = nil;
+        _videoOutputItem = nil;
+    }
+    [self cachePixelBuffer:NULL displayTime:kCMTimeInvalid];
+}
+
+- (void)captureFrameWithWatermark:(NSString*)watermarkText result:(FlutterResult)result {
+    FlutterError* guardError = [self frameCaptureGuardError];
+    if (guardError != nil) {
+        result(guardError);
+        return;
+    }
+    NSUInteger generation = ++_captureGeneration;
+    _captureResult = result;
+    _captureWatermark = [BetterPlayer drawableWatermark:watermarkText];
+
+    CVPixelBufferRef pixelBuffer = [self copyCurrentPixelBuffer];
+    if (pixelBuffer != NULL) {
+        [self renderPixelBuffer:pixelBuffer forCapture:generation];
+        CVPixelBufferRelease(pixelBuffer);
+    } else {
+        [self awaitFrameForCapture:generation];
+    }
+}
+
+- (FlutterError*)frameCaptureGuardError {
+    if (_disposed || _player.currentItem == nil) {
+        return FrameCaptureError(kFrameCaptureErrorUnavailable, @"The player has no video");
+    }
+    if (!_frameCaptureEnabled) {
+        return FrameCaptureError(kFrameCaptureErrorUnsupported,
+                                 @"Frame capture is not enabled for this player");
+    }
+    if (_videoOutput == nil) {
+        return FrameCaptureError(kFrameCaptureErrorUnavailable, @"The video is not ready yet");
+    }
+    // While the video plays on an AirPlay device it is not decoded locally, so the output
+    // has no frames to give.
+    if (_player.isExternalPlaybackActive) {
+        return FrameCaptureError(kFrameCaptureErrorUnavailable,
+                                 @"The video is playing on an external device");
+    }
+    if (_captureResult != nil) {
+        return FrameCaptureError(kFrameCaptureErrorUnavailable,
+                                 @"A frame capture is already in progress");
+    }
+    return nil;
+}
+
+/// The channel delivers a missing watermark as nil or NSNull, and blank text draws nothing.
++ (NSString*)drawableWatermark:(id)watermarkText {
+    if (![watermarkText isKindOfClass:[NSString class]]) {
+        return nil;
+    }
+    NSCharacterSet* blank = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+    return [watermarkText stringByTrimmingCharactersInSet:blank].length > 0 ? watermarkText : nil;
+}
+
+/// Returns the frame at the playhead, retained for the caller, or NULL when the output has
+/// none to give yet.
+- (CVPixelBufferRef)copyCurrentPixelBuffer {
+    CMTime itemTime = [_videoOutput itemTimeForHostTime:CACurrentMediaTime()];
+    if (!CMTIME_IS_NUMERIC(itemTime)) {
+        itemTime = _player.currentItem.currentTime;
+    }
+    // Not gated on hasNewPixelBufferForItemTime: it only reports frames that were not vended
+    // yet, which says nothing about whether a frame is on screen.
+    CMTime displayTime = kCMTimeInvalid;
+    CVPixelBufferRef pixelBuffer = [_videoOutput copyPixelBufferForItemTime:itemTime
+                                                         itemTimeForDisplay:&displayTime];
+    if (pixelBuffer != NULL) {
+        [self cachePixelBuffer:pixelBuffer
+                   displayTime:CMTIME_IS_NUMERIC(displayTime) ? displayTime : itemTime];
+        return pixelBuffer;
+    }
+    // The output hands each frame out only once, so NULL also means "you already have it":
+    // a second capture while paused ends up here. The cached frame is still the one on screen
+    // as long as the playhead has not moved away from it.
+    if (_lastPixelBuffer != NULL && CMTIME_IS_NUMERIC(itemTime) &&
+        fabs(CMTimeGetSeconds(CMTimeSubtract(itemTime, _lastPixelBufferTime))) <=
+            kFrameCaptureCachedFrameTolerance) {
+        return CVPixelBufferRetain(_lastPixelBuffer);
+    }
+    return NULL;
+}
+
+- (void)cachePixelBuffer:(CVPixelBufferRef)pixelBuffer displayTime:(CMTime)displayTime {
+    CVPixelBufferRetain(pixelBuffer);
+    CVPixelBufferRelease(_lastPixelBuffer);
+    _lastPixelBuffer = pixelBuffer;
+    _lastPixelBufferTime = displayTime;
+}
+
+- (void)awaitFrameForCapture:(NSUInteger)generation {
+    _captureAwaitingFrame = YES;
+    [_videoOutput requestNotificationOfMediaDataChangeWithAdvanceInterval:0];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(kFrameCaptureFrameTimeout * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [weakSelf frameWaitDidTimeOutForCapture:generation];
+    });
+}
+
+- (void)outputMediaDataWillChange:(AVPlayerItemOutput*)sender {
+    if (sender != _videoOutput || !_captureAwaitingFrame) {
+        return;
+    }
+    CVPixelBufferRef pixelBuffer = [self copyCurrentPixelBuffer];
+    if (pixelBuffer == NULL) {
+        // Still nothing to copy: the timeout makes the last attempt.
+        return;
+    }
+    [self renderPixelBuffer:pixelBuffer forCapture:_captureGeneration];
+    CVPixelBufferRelease(pixelBuffer);
+}
+
+- (void)frameWaitDidTimeOutForCapture:(NSUInteger)generation {
+    // That capture already got its frame or was failed, possibly with a newer one waiting now.
+    if (generation != _captureGeneration || !_captureAwaitingFrame) {
+        return;
+    }
+    CVPixelBufferRef pixelBuffer = [self copyCurrentPixelBuffer];
+    if (pixelBuffer != NULL) {
+        [self renderPixelBuffer:pixelBuffer forCapture:generation];
+        CVPixelBufferRelease(pixelBuffer);
+        return;
+    }
+    // FairPlay frames are never exposed to the app, so for such a source this is the cause.
+    FlutterError* error = _isFairPlayProtected
+        ? FrameCaptureError(kFrameCaptureErrorProtectedContent, @"The video is protected")
+        : FrameCaptureError(kFrameCaptureErrorUnavailable, @"No video frame is available");
+    [self finishCapture:generation withValue:error];
+}
+
+/// Preferred transform to apply to the frames of the current item, identity when they are
+/// already upright.
+- (CGAffineTransform)frameCaptureOrientation {
+    // A video composition (file based media) renders the frames upright. Without one, which
+    // is always the case for HLS, the output vends them the way they were encoded.
+    if (_videoOutputItem.videoComposition != nil) {
+        return CGAffineTransformIdentity;
+    }
+    for (AVPlayerItemTrack* track in _videoOutputItem.tracks) {
+        AVAssetTrack* assetTrack = track.assetTrack;
+        if ([assetTrack.mediaType isEqualToString:AVMediaTypeVideo]) {
+            return assetTrack.preferredTransform;
+        }
+    }
+    return CGAffineTransformIdentity;
+}
+
+- (dispatch_queue_t)captureQueue {
+    if (_captureQueue == nil) {
+        // Utility QoS so encoding a screenshot never competes with playback or the UI.
+        dispatch_queue_attr_t attributes =
+            dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0);
+        _captureQueue = dispatch_queue_create("better_player.frame_capture", attributes);
+    }
+    return _captureQueue;
+}
+
+/// Converts and encodes the frame off the main thread. The background block deliberately
+/// does not reference self, so the player can never be released on the capture queue.
+- (void)renderPixelBuffer:(CVPixelBufferRef)pixelBuffer forCapture:(NSUInteger)generation {
+    _captureAwaitingFrame = NO;
+    CGAffineTransform orientation = [self frameCaptureOrientation];
+    NSString* watermark = _captureWatermark;
+    CIContext* existingContext = _captureContext;
+    __weak typeof(self) weakSelf = self;
+    // Blocks do not retain Core Foundation objects, the buffer has to be kept alive for the hop.
+    CVPixelBufferRetain(pixelBuffer);
+    dispatch_async([self captureQueue], ^{
+        // Building a context is expensive, so it happens here on first use and the context is
+        // handed back to be reused. Intermediates of a one-off frame are not worth caching.
+        CIContext* context = existingContext
+            ?: [CIContext contextWithOptions:@{kCIContextCacheIntermediates : @NO}];
+        NSData* jpegData = [BetterPlayer jpegDataFromPixelBuffer:pixelBuffer
+                                                     orientation:orientation
+                                                       watermark:watermark
+                                                         context:context];
+        CVPixelBufferRelease(pixelBuffer);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf didRenderJpegData:jpegData withContext:context forCapture:generation];
+        });
+    });
+}
+
+- (void)didRenderJpegData:(NSData*)jpegData
+              withContext:(CIContext*)context
+               forCapture:(NSUInteger)generation {
+    _captureContext = context;
+    if (jpegData == nil) {
+        [self finishCapture:generation
+                  withValue:FrameCaptureError(kFrameCaptureErrorCopyFailed,
+                                              @"The video frame could not be encoded")];
+        return;
+    }
+    [self finishCapture:generation
+              withValue:[FlutterStandardTypedData typedDataWithBytes:jpegData]];
+}
+
+/// Replies to the capture in flight exactly once; a call for a capture that already got its
+/// reply does nothing.
+- (void)finishCapture:(NSUInteger)generation withValue:(id)value {
+    if (generation != _captureGeneration || _captureResult == nil) {
+        return;
+    }
+    FlutterResult result = _captureResult;
+    _captureResult = nil;
+    _captureWatermark = nil;
+    _captureAwaitingFrame = NO;
+    result(value);
+}
+
++ (NSData*)jpegDataFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                       orientation:(CGAffineTransform)orientation
+                         watermark:(NSString*)watermark
+                           context:(CIContext*)context {
+    NSData* jpegData = nil;
+    @autoreleasepool {
+        UIImage* frame = [self frameImageFromPixelBuffer:pixelBuffer
+                                             orientation:orientation
+                                                 context:context];
+        if (frame != nil) {
+            UIImage* image = [self imageByDrawingWatermark:watermark overFrame:frame];
+            jpegData = UIImageJPEGRepresentation(image, kFrameCaptureJpegQuality);
+        }
+    }
+    return jpegData;
+}
+
++ (UIImage*)frameImageFromPixelBuffer:(CVPixelBufferRef)pixelBuffer
+                          orientation:(CGAffineTransform)orientation
+                              context:(CIContext*)context {
+    CIImage* image = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+    if (image != nil && !CGAffineTransformIsIdentity(orientation)) {
+        // The preferred transform is defined for a top-left origin while Core Image uses a
+        // bottom-left one, hence the mirrored rotation terms. Its translation is dropped:
+        // the result is moved back to the origin instead.
+        image = [image imageByApplyingTransform:CGAffineTransformMake(orientation.a,
+                                                                      -orientation.b,
+                                                                      -orientation.c,
+                                                                      orientation.d, 0, 0)];
+        image = [image imageByApplyingTransform:
+                 CGAffineTransformMakeTranslation(-image.extent.origin.x, -image.extent.origin.y)];
+    }
+    if (image == nil || CGRectIsEmpty(image.extent) || CGRectIsInfinite(image.extent)) {
+        return nil;
+    }
+    CGImageRef cgImage = [context createCGImage:image fromRect:image.extent];
+    if (cgImage == NULL) {
+        return nil;
+    }
+    UIImage* frame = [UIImage imageWithCGImage:cgImage];
+    CGImageRelease(cgImage);
+    return frame;
+}
+
++ (UIImage*)imageByDrawingWatermark:(NSString*)watermark overFrame:(UIImage*)frame {
+    UIGraphicsImageRendererFormat* format = [UIGraphicsImageRendererFormat defaultFormat];
+    // Scale 1 keeps the result at the video's pixel size instead of the screen's scale.
+    format.scale = 1;
+    format.opaque = YES;
+    if (@available(iOS 12.0, *)) {
+        // A wide colour backing store would only double the memory of an 8 bit JPEG.
+        format.preferredRange = UIGraphicsImageRendererFormatRangeStandard;
+    }
+    CGRect bounds = CGRectMake(0, 0, frame.size.width, frame.size.height);
+    UIGraphicsImageRenderer* renderer =
+        [[UIGraphicsImageRenderer alloc] initWithSize:bounds.size format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext* rendererContext) {
+        [frame drawInRect:bounds];
+        [self drawWatermark:watermark inRect:bounds];
+    }];
+}
+
++ (void)drawWatermark:(NSString*)watermark inRect:(CGRect)bounds {
+    if (watermark == nil) {
+        return;
+    }
+    CGFloat fontSize = MAX(kFrameCaptureWatermarkMinFontSize,
+                           kFrameCaptureWatermarkFontRatio *
+                               MIN(bounds.size.width, bounds.size.height));
+    NSShadow* shadow = [[NSShadow alloc] init];
+    shadow.shadowColor = [UIColor colorWithWhite:0 alpha:kFrameCaptureWatermarkAlpha];
+    shadow.shadowBlurRadius = fontSize / 8;
+    shadow.shadowOffset = CGSizeZero;
+    NSDictionary* attributes = @{
+        NSFontAttributeName : [UIFont systemFontOfSize:fontSize],
+        NSForegroundColorAttributeName : [UIColor colorWithWhite:1
+                                                           alpha:kFrameCaptureWatermarkAlpha],
+        NSShadowAttributeName : shadow
+    };
+    CGSize textSize = [watermark sizeWithAttributes:attributes];
+    [watermark drawAtPoint:CGPointMake(CGRectGetMidX(bounds) - textSize.width / 2,
+                                       CGRectGetMidY(bounds) - textSize.height / 2)
+            withAttributes:attributes];
 }
 
 @end

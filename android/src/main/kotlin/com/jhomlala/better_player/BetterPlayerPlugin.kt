@@ -216,6 +216,13 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
                     player.setMixWithOthers(mixWitOthers)
                 }
             }
+            SET_FRAME_CAPTURE_ENABLED_METHOD -> {
+                //Only iOS has to prepare for frame capture, Android reads the surface on demand.
+                result.success(null)
+            }
+            CAPTURE_FRAME_METHOD -> {
+                player.captureFrame(call.argument<String?>(WATERMARK_TEXT_PARAMETER), result)
+            }
             DISPOSE_METHOD -> {
                 dispose(player, textureId)
                 result.success(null)
@@ -512,6 +519,7 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         private const val DRM_HEADERS_PARAMETER = "drmHeaders"
         private const val DRM_CLEARKEY_PARAMETER = "clearKey"
         private const val MIX_WITH_OTHERS_PARAMETER = "mixWithOthers"
+        private const val WATERMARK_TEXT_PARAMETER = "watermarkText"
         const val URL_PARAMETER = "url"
         const val PRE_CACHE_SIZE_PARAMETER = "preCacheSize"
         const val MAX_CACHE_SIZE_PARAMETER = "maxCacheSize"
@@ -541,6 +549,8 @@ class BetterPlayerPlugin : FlutterPlugin, ActivityAware, MethodCallHandler {
         private const val DISABLE_PICTURE_IN_PICTURE_METHOD = "disablePictureInPicture"
         private const val IS_PICTURE_IN_PICTURE_SUPPORTED_METHOD = "isPictureInPictureSupported"
         private const val SET_MIX_WITH_OTHERS_METHOD = "setMixWithOthers"
+        private const val SET_FRAME_CAPTURE_ENABLED_METHOD = "setFrameCaptureEnabled"
+        private const val CAPTURE_FRAME_METHOD = "captureFrame"
         private const val CLEAR_CACHE_METHOD = "clearCache"
         private const val DISPOSE_METHOD = "dispose"
         private const val PRE_CACHE_METHOD = "preCache"

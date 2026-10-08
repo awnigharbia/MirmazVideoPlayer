@@ -391,6 +391,18 @@ bool _remoteCommandsInitialized = false;
             result(nil);
         } else if ([@"setSpeed" isEqualToString:call.method]) {
             [player setSpeed:[[argsMap objectForKey:@"speed"] doubleValue] result:result];
+        } else if ([@"setFrameCaptureEnabled" isEqualToString:call.method]) {
+            [player setFrameCaptureEnabled:[argsMap[@"enabled"] boolValue]];
+            result(nil);
+        } else if ([@"captureFrame" isEqualToString:call.method]) {
+            if (player == nil) {
+                // Messaging a nil player would never reply and leave the Dart future pending.
+                result([FlutterError errorWithCode:@"unavailable"
+                                           message:@"Player is not available"
+                                           details:nil]);
+            } else {
+                [player captureFrameWithWatermark:argsMap[@"watermarkText"] result:result];
+            }
         }else if ([@"setTrackParameters" isEqualToString:call.method]) {
             int width = [argsMap[@"width"] intValue];
             int height = [argsMap[@"height"] intValue];

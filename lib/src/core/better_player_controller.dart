@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:better_player/better_player.dart';
 import 'package:better_player/src/configuration/better_player_controller_event.dart';
@@ -250,6 +251,16 @@ class BetterPlayerController {
           bufferingConfiguration:
               betterPlayerDataSource.bufferingConfiguration);
       videoPlayerController?.addListener(_onVideoPlayerChanged);
+
+      ///Enable frame capture. Not awaited so setting up the data source is
+      ///not delayed, platform side accepts it at any time.
+      if (betterPlayerConfiguration.enableFrameCapture) {
+        videoPlayerController
+            ?.setFrameCaptureEnabled(true)
+            .catchError((Object exception) {
+          BetterPlayerUtils.log("Enable frame capture failed: $exception");
+        });
+      }
     }
 
     ///Clear asms tracks
@@ -1127,6 +1138,24 @@ class BetterPlayerController {
         (await videoPlayerController!.isPictureInPictureSupported()) ?? false;
 
     return isPipSupported && !_isFullScreen;
+  }
+
+  ///Take screenshot of the video. Returns JPEG bytes of the currently
+  ///displayed video frame only (no controls, subtitles or Flutter overlays).
+  ///When [watermarkText] is provided, it is burned into the image natively.
+  ///Requires [BetterPlayerConfiguration.enableFrameCapture] to be true.
+  ///Throws `PlatformException` with one of the following codes on failure:
+  ///`unsupported` - Android below API 24 or capture not enabled,
+  ///`protected_content` - DRM-protected video,
+  ///`copy_failed` - capture or encoding failed,
+  ///`unavailable` - no frame available right now (not ready, disposed,
+  ///AirPlay active, or another capture in flight).
+  Future<Uint8List?> takeScreenshot({String? watermarkText}) async {
+    if (videoPlayerController == null) {
+      throw StateError("The data source has not been initialized");
+    }
+
+    return videoPlayerController!.captureFrame(watermarkText: watermarkText);
   }
 
   ///Handle VideoEvent when remote controls notification / PiP is shown

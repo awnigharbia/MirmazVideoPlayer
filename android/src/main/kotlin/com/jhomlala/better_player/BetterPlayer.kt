@@ -8,10 +8,15 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import com.jhomlala.better_player.DataSourceUtils.getUserAgent
 import com.jhomlala.better_player.DataSourceUtils.isHTTP
 import com.jhomlala.better_player.DataSourceUtils.getDataSourceFactory
@@ -39,7 +44,9 @@ import androidx.work.OneTimeWorkRequest
 import android.support.v4.media.session.PlaybackStateCompat
 import android.support.v4.media.MediaMetadataCompat
 import android.util.Log
+import android.view.PixelCopy
 import android.view.Surface
+import androidx.annotation.RequiresApi
 import androidx.lifecycle.Observer
 import com.google.android.exoplayer2.source.smoothstreaming.SsMediaSource
 import com.google.android.exoplayer2.source.smoothstreaming.DefaultSsChunkSource
@@ -58,10 +65,12 @@ import com.google.android.exoplayer2.trackselection.TrackSelectionOverride
 import com.google.android.exoplayer2.upstream.DataSource
 import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.google.android.exoplayer2.util.Util
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.lang.Exception
 import java.lang.IllegalStateException
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.min
 
@@ -91,6 +100,12 @@ internal class BetterPlayer(
     private val customDefaultLoadControl: CustomDefaultLoadControl =
         customDefaultLoadControl ?: CustomDefaultLoadControl()
     private var lastSendBufferedPosition = 0L
+
+    @Volatile
+    private var isDisposed = false
+    private val frameCaptureMainHandler = Handler(Looper.getMainLooper())
+    private var frameCaptureHandler: Handler? = null
+    private var pendingFrameCapture: FrameCaptureRequest? = null
 
     init {
         val loadBuilder = DefaultLoadControl.Builder()
@@ -752,7 +767,225 @@ internal class BetterPlayer(
         setAudioAttributes(exoPlayer, mixWithOthers)
     }
 
+    /**
+     * Replies with the frame currently on the video surface as JPEG bytes. Has to be called on
+     * the main thread; copying and encoding run on a background thread so playback is not held up.
+     */
+    fun captureFrame(watermarkText: String?, result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            result.error(
+                FRAME_CAPTURE_ERROR_UNSUPPORTED, "Frame capture requires Android 7.0 or newer", null
+            )
+            return
+        }
+        if (isDisposed || pendingFrameCapture != null) {
+            result.error(
+                FRAME_CAPTURE_ERROR_UNAVAILABLE,
+                "Player is disposed or a frame capture is already in progress",
+                null
+            )
+            return
+        }
+        val captureSurface = surface
+        val size = computeFrameCaptureSize()
+        if (captureSurface == null || !captureSurface.isValid || size == null) {
+            result.error(FRAME_CAPTURE_ERROR_UNAVAILABLE, "No video frame is available yet", null)
+            return
+        }
+        val request = FrameCaptureRequest(
+            captureSurface, size, watermarkText, result, obtainFrameCaptureHandler()
+        )
+        pendingFrameCapture = request
+        request.handler.post { requestPixelCopy(request) }
+    }
+
+    private fun obtainFrameCaptureHandler(): Handler {
+        frameCaptureHandler?.let { return it }
+        val thread = HandlerThread(FRAME_CAPTURE_THREAD_NAME, Process.THREAD_PRIORITY_BACKGROUND)
+        thread.start()
+        return Handler(thread.looper).also { frameCaptureHandler = it }
+    }
+
+    private fun computeFrameCaptureSize(): FrameSize? {
+        val videoSize = exoPlayer?.videoSize ?: return null
+        //Decoder buffers hold stored pixels, so the pixel aspect ratio has to be applied here for
+        //anamorphic video to come out with its display proportions.
+        val width = Math.round(videoSize.width * videoSize.pixelWidthHeightRatio)
+        val height = videoSize.height
+        if (width <= 0 || height <= 0) {
+            return null
+        }
+        val longerSide = max(width, height)
+        if (longerSide <= FRAME_CAPTURE_MAX_SIDE) {
+            return FrameSize(width, height)
+        }
+        //Keeps the bitmap small for 4K sources, which would otherwise need about 33 MB.
+        val scale = FRAME_CAPTURE_MAX_SIDE.toFloat() / longerSide
+        return FrameSize(max(1, Math.round(width * scale)), max(1, Math.round(height * scale)))
+    }
+
+    //PixelCopy reads the last queued buffer without dequeuing it, so the decoder is never
+    //blocked. On older releases the call itself blocks, hence the capture thread.
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun requestPixelCopy(request: FrameCaptureRequest) {
+        if (isDisposed || !request.surface.isValid) {
+            replyFrameCaptureError(
+                request, FRAME_CAPTURE_ERROR_UNAVAILABLE, "Video surface is no longer available"
+            )
+            return
+        }
+        try {
+            val bitmap = request.bitmap ?: Bitmap.createBitmap(
+                request.size.width, request.size.height, Bitmap.Config.ARGB_8888
+            ).also { request.bitmap = it }
+            PixelCopy.request(
+                request.surface,
+                bitmap,
+                PixelCopy.OnPixelCopyFinishedListener { copyResult ->
+                    onPixelCopyFinished(request, bitmap, copyResult)
+                },
+                request.handler
+            )
+        } catch (throwable: Throwable) {
+            //PixelCopy throws when the surface is released underneath it and the bitmap
+            //allocation can run out of memory.
+            failFrameCapture(request, throwable)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun onPixelCopyFinished(request: FrameCaptureRequest, bitmap: Bitmap, copyResult: Int) {
+        if (isDisposed) {
+            replyFrameCaptureError(request, FRAME_CAPTURE_ERROR_UNAVAILABLE, "Player was disposed")
+            return
+        }
+        when (copyResult) {
+            PixelCopy.SUCCESS -> replyWithEncodedFrame(request, bitmap)
+            PixelCopy.ERROR_SOURCE_NO_DATA -> retryPixelCopy(request)
+            else -> replyFrameCaptureError(
+                request,
+                pixelCopyErrorCode(copyResult, request.surface),
+                "PixelCopy failed with result $copyResult"
+            )
+        }
+    }
+
+    //The surface has no queued buffer right after start or a seek; the next frame is usually
+    //only a few milliseconds away.
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun retryPixelCopy(request: FrameCaptureRequest) {
+        val scheduled = request.retriesLeft-- > 0 && request.handler.postDelayed(
+            { requestPixelCopy(request) }, FRAME_CAPTURE_RETRY_DELAY_MS
+        )
+        if (!scheduled) {
+            replyFrameCaptureError(
+                request, FRAME_CAPTURE_ERROR_UNAVAILABLE, "No video frame has been rendered yet"
+            )
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.N)
+    private fun pixelCopyErrorCode(copyResult: Int, source: Surface): String {
+        return when (copyResult) {
+            //Reported both for protected (DRM) buffers and for a surface destroyed during the
+            //copy, so the surface state is the only way to tell the two apart.
+            PixelCopy.ERROR_SOURCE_INVALID ->
+                if (isDisposed || !source.isValid) {
+                    FRAME_CAPTURE_ERROR_UNAVAILABLE
+                } else {
+                    FRAME_CAPTURE_ERROR_PROTECTED_CONTENT
+                }
+            else -> FRAME_CAPTURE_ERROR_COPY_FAILED
+        }
+    }
+
+    private fun replyWithEncodedFrame(request: FrameCaptureRequest, bitmap: Bitmap) {
+        try {
+            val jpeg = encodeFrame(bitmap, request.watermarkText)
+            request.recycleBitmap()
+            postFrameCaptureReply(request) { it.success(jpeg) }
+        } catch (throwable: Throwable) {
+            failFrameCapture(request, throwable)
+        }
+    }
+
+    private fun encodeFrame(bitmap: Bitmap, watermarkText: String?): ByteArray {
+        drawWatermark(bitmap, watermarkText)
+        val output = ByteArrayOutputStream()
+        check(bitmap.compress(Bitmap.CompressFormat.JPEG, FRAME_CAPTURE_JPEG_QUALITY, output)) {
+            "JPEG compression failed"
+        }
+        return output.toByteArray()
+    }
+
+    private fun drawWatermark(bitmap: Bitmap, text: String?) {
+        if (text.isNullOrBlank()) {
+            return
+        }
+        val textSize = max(
+            WATERMARK_MIN_TEXT_SIZE, WATERMARK_TEXT_SIZE_RATIO * min(bitmap.width, bitmap.height)
+        )
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        paint.color = Color.argb(WATERMARK_ALPHA, 255, 255, 255)
+        paint.textSize = textSize
+        paint.textAlign = Paint.Align.CENTER
+        paint.setShadowLayer(textSize / 8, 0f, 0f, Color.argb(WATERMARK_ALPHA, 0, 0, 0))
+        //Text is positioned by its baseline, so shift it to put the glyphs' middle on the centre.
+        val baseline = bitmap.height / 2f - (paint.ascent() + paint.descent()) / 2f
+        Canvas(bitmap).drawText(text, bitmap.width / 2f, baseline, paint)
+    }
+
+    private fun failFrameCapture(request: FrameCaptureRequest, cause: Throwable) {
+        Log.e(TAG, "Frame capture failed: $cause")
+        val code =
+            if (isDisposed) FRAME_CAPTURE_ERROR_UNAVAILABLE else FRAME_CAPTURE_ERROR_COPY_FAILED
+        replyFrameCaptureError(request, code, cause.toString())
+    }
+
+    private fun replyFrameCaptureError(
+        request: FrameCaptureRequest, code: String, message: String
+    ) {
+        request.recycleBitmap()
+        postFrameCaptureReply(request) { it.error(code, message, null) }
+    }
+
+    private fun postFrameCaptureReply(
+        request: FrameCaptureRequest, reply: (MethodChannel.Result) -> Unit
+    ) {
+        frameCaptureMainHandler.post { completeFrameCapture(request, reply) }
+    }
+
+    //Runs on the main thread only. A capture can finish after dispose() has already answered
+    //it, and replying to the same channel call twice throws.
+    private fun completeFrameCapture(
+        request: FrameCaptureRequest, reply: (MethodChannel.Result) -> Unit
+    ) {
+        if (!request.replied.compareAndSet(false, true)) {
+            return
+        }
+        if (pendingFrameCapture === request) {
+            pendingFrameCapture = null
+        }
+        reply(request.result)
+    }
+
+    private fun disposeFrameCapture() {
+        pendingFrameCapture?.let { request ->
+            completeFrameCapture(request) {
+                it.error(FRAME_CAPTURE_ERROR_UNAVAILABLE, "Player was disposed", null)
+            }
+        }
+        //The capture thread only ever exists on API 24+. Quitting safely lets a running copy
+        //finish instead of making the main thread wait for it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            frameCaptureHandler?.looper?.quitSafely()
+        }
+        frameCaptureHandler = null
+    }
+
     fun dispose() {
+        isDisposed = true
+        disposeFrameCapture()
         disposeMediaSession()
         disposeRemoteNotifications()
         if (isInitialized) {
@@ -778,6 +1011,27 @@ internal class BetterPlayer(
         return result
     }
 
+    private class FrameSize(val width: Int, val height: Int)
+
+    //State of a single captureFrame call. bitmap and retriesLeft are only touched on the
+    //capture thread.
+    private class FrameCaptureRequest(
+        val surface: Surface,
+        val size: FrameSize,
+        val watermarkText: String?,
+        val result: MethodChannel.Result,
+        val handler: Handler
+    ) {
+        val replied = AtomicBoolean(false)
+        var bitmap: Bitmap? = null
+        var retriesLeft = FRAME_CAPTURE_MAX_RETRIES
+
+        fun recycleBitmap() {
+            bitmap?.recycle()
+            bitmap = null
+        }
+    }
+
     companion object {
         private const val TAG = "BetterPlayer"
         private const val FORMAT_SS = "ss"
@@ -786,6 +1040,19 @@ internal class BetterPlayer(
         private const val FORMAT_OTHER = "other"
         private const val DEFAULT_NOTIFICATION_CHANNEL = "BETTER_PLAYER_NOTIFICATION"
         private const val NOTIFICATION_ID = 20772077
+        private const val FRAME_CAPTURE_THREAD_NAME = "BetterPlayerFrameCapture"
+        private const val FRAME_CAPTURE_MAX_SIDE = 1920
+        private const val FRAME_CAPTURE_JPEG_QUALITY = 90
+        private const val FRAME_CAPTURE_MAX_RETRIES = 2
+        private const val FRAME_CAPTURE_RETRY_DELAY_MS = 80L
+        private const val FRAME_CAPTURE_ERROR_UNSUPPORTED = "unsupported"
+        private const val FRAME_CAPTURE_ERROR_PROTECTED_CONTENT = "protected_content"
+        private const val FRAME_CAPTURE_ERROR_COPY_FAILED = "copy_failed"
+        private const val FRAME_CAPTURE_ERROR_UNAVAILABLE = "unavailable"
+        private const val WATERMARK_MIN_TEXT_SIZE = 14f
+        private const val WATERMARK_TEXT_SIZE_RATIO = 0.035f
+        //45% opacity.
+        private const val WATERMARK_ALPHA = 115
 
         //Clear cache without accessing BetterPlayerCache.
         fun clearCache(context: Context?, result: MethodChannel.Result) {

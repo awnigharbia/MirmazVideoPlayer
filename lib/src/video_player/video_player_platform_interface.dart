@@ -156,6 +156,19 @@ abstract class VideoPlayerPlatform {
         'isPictureInPictureEnabled() has not been implemented.');
   }
 
+  ///Enables or disables frame capture of the video. Must be enabled before
+  ///[captureFrame] can be used.
+  Future<void> setFrameCaptureEnabled(int? textureId, bool enabled) {
+    throw UnimplementedError(
+        'setFrameCaptureEnabled() has not been implemented.');
+  }
+
+  ///Captures currently displayed video frame as JPEG bytes. [watermarkText]
+  ///is drawn on the image when provided.
+  Future<Uint8List?> captureFrame(int? textureId, String? watermarkText) {
+    throw UnimplementedError('captureFrame() has not been implemented.');
+  }
+
   Future<void> setAudioTrack(int? textureId, String? name, int? index) {
     throw UnimplementedError('setAudio() has not been implemented.');
   }

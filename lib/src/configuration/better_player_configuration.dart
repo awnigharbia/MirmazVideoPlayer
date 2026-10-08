@@ -118,6 +118,11 @@ class BetterPlayerConfiguration {
   ///Default value is false.
   final bool useRootNavigator;
 
+  ///Flag which enables [BetterPlayerController.takeScreenshot]. On iOS it
+  ///attaches a video output to each item when it becomes ready. Default value
+  ///is false, so existing apps are not affected.
+  final bool enableFrameCapture;
+
   const BetterPlayerConfiguration({
     this.aspectRatio,
     this.autoPlay = false,
@@ -156,6 +161,7 @@ class BetterPlayerConfiguration {
     this.autoDispose = true,
     this.expandToFill = true,
     this.useRootNavigator = false,
+    this.enableFrameCapture = false,
   });
 
   BetterPlayerConfiguration copyWith({
@@ -188,6 +194,7 @@ class BetterPlayerConfiguration {
     bool? autoDispose,
     bool? expandToFill,
     bool? useRootNavigator,
+    bool? enableFrameCapture,
   }) {
     return BetterPlayerConfiguration(
       aspectRatio: aspectRatio ?? this.aspectRatio,
@@ -228,6 +235,7 @@ class BetterPlayerConfiguration {
       autoDispose: autoDispose ?? this.autoDispose,
       expandToFill: expandToFill ?? this.expandToFill,
       useRootNavigator: useRootNavigator ?? this.useRootNavigator,
+      enableFrameCapture: enableFrameCapture ?? this.enableFrameCapture,
     );
   }
 }

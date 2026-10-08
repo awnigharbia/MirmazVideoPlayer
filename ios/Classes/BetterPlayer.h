@@ -56,6 +56,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)disablePictureInPicture;
 - (int64_t)absolutePosition;
 - (int64_t) FLTCMTimeToMillis:(CMTime) time;
+/// Frame capture is opt-in per player: while it is enabled a video output stays attached to
+/// the current item so a frame can be copied without touching playback.
+- (void)setFrameCaptureEnabled:(BOOL)enabled;
+/// Replies with the currently displayed frame as JPEG data (FlutterStandardTypedData), or with
+/// a FlutterError whose code is unsupported, protected_content, copy_failed or unavailable.
+- (void)captureFrameWithWatermark:(nullable NSString*)watermarkText result:(FlutterResult)result;
 
 - (void)clear;
 - (void)disposeSansEventChannel;

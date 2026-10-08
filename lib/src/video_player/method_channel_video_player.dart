@@ -260,6 +260,28 @@ class MethodChannelVideoPlayer extends VideoPlayerPlatform {
   }
 
   @override
+  Future<void> setFrameCaptureEnabled(int? textureId, bool enabled) {
+    return _channel.invokeMethod<void>(
+      'setFrameCaptureEnabled',
+      <String, dynamic>{
+        'textureId': textureId,
+        'enabled': enabled,
+      },
+    );
+  }
+
+  @override
+  Future<Uint8List?> captureFrame(int? textureId, String? watermarkText) {
+    return _channel.invokeMethod<Uint8List>(
+      'captureFrame',
+      <String, dynamic>{
+        'textureId': textureId,
+        'watermarkText': watermarkText,
+      },
+    );
+  }
+
+  @override
   Future<void> setAudioTrack(int? textureId, String? name, int? index) {
     return _channel.invokeMethod<void>(
       'setAudioTrack',
