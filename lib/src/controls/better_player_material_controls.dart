@@ -5,6 +5,7 @@ import 'package:better_player/src/controls/better_player_clickable_widget.dart';
 import 'package:better_player/src/controls/better_player_controls_state.dart';
 import 'package:better_player/src/controls/better_player_material_progress_bar.dart';
 import 'package:better_player/src/controls/better_player_multiple_gesture_detector.dart';
+import 'package:better_player/src/controls/better_player_overflow_menu_item.dart';
 import 'package:better_player/src/controls/better_player_progress_colors.dart';
 import 'package:better_player/src/core/better_player_controller.dart';
 import 'package:better_player/src/core/better_player_utils.dart';
@@ -212,6 +213,8 @@ class _BetterPlayerMaterialControlsState
                           controlsNotVisible, _onPlayerHide)
                     else
                       const SizedBox(),
+                    ..._controlsConfiguration.topBarCustomItems
+                        .map(_buildTopBarCustomButton),
                     _buildMoreButton(),
                   ],
                 ),
@@ -263,6 +266,24 @@ class _BetterPlayerMaterialControlsState
           return const SizedBox();
         }
       },
+    );
+  }
+
+  Widget _buildTopBarCustomButton(BetterPlayerOverflowMenuItem item) {
+    return Tooltip(
+      message: item.title,
+      child: BetterPlayerMaterialClickableWidget(
+        onTap: () {
+          item.onClicked();
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(
+            item.icon,
+            color: _controlsConfiguration.iconsColor,
+          ),
+        ),
+      ),
     );
   }
 

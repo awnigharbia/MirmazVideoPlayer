@@ -4,6 +4,7 @@ import 'package:better_player/src/configuration/better_player_controls_configura
 import 'package:better_player/src/controls/better_player_controls_state.dart';
 import 'package:better_player/src/controls/better_player_cupertino_progress_bar.dart';
 import 'package:better_player/src/controls/better_player_multiple_gesture_detector.dart';
+import 'package:better_player/src/controls/better_player_overflow_menu_item.dart';
 import 'package:better_player/src/controls/better_player_progress_colors.dart';
 import 'package:better_player/src/core/better_player_controller.dart';
 import 'package:better_player/src/core/better_player_utils.dart';
@@ -305,6 +306,45 @@ class _BetterPlayerCupertinoControlsState
     );
   }
 
+  Widget _buildTopBarCustomButton(
+    BetterPlayerOverflowMenuItem item,
+    Color backgroundColor,
+    Color iconColor,
+    double barHeight,
+    double iconSize,
+    double buttonPadding,
+  ) {
+    return GestureDetector(
+      onTap: () {
+        item.onClicked();
+      },
+      child: AnimatedOpacity(
+        opacity: controlsNotVisible ? 0.0 : 1.0,
+        duration: _controlsConfiguration.controlsHideTime,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10.0),
+          child: Container(
+            decoration: BoxDecoration(
+              color: backgroundColor,
+            ),
+            child: Container(
+              height: barHeight,
+              padding: EdgeInsets.symmetric(
+                horizontal: buttonPadding,
+              ),
+              child: Icon(
+                item.icon,
+                color: iconColor,
+                size: iconSize,
+                semanticLabel: item.title,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   GestureDetector _buildMoreButton(
     VideoPlayerController? controller,
     Color backgroundColor,
@@ -534,6 +574,19 @@ class _BetterPlayerCupertinoControlsState
             )
           else
             const SizedBox(),
+          for (final item in _controlsConfiguration.topBarCustomItems) ...[
+            const SizedBox(
+              width: 4,
+            ),
+            _buildTopBarCustomButton(
+              item,
+              backgroundColor,
+              iconColor,
+              barHeight,
+              iconSize,
+              buttonPadding,
+            ),
+          ],
           const SizedBox(
             width: 4,
           ),
