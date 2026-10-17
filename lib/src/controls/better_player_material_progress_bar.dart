@@ -48,8 +48,11 @@ class _VideoProgressBarState
   BetterPlayerController? get betterPlayerController =>
       widget.betterPlayerController;
 
-  bool shouldPlayAfterDragEnd = false;
   Duration? lastSeek;
+
+  /// Where the current drag will seek to on release. Dragging only moves
+  /// the bar; seeking on every drag update floods the native player.
+  Duration? _dragTarget;
   Timer? _updateBlockTimer;
 
   @override
@@ -89,8 +92,12 @@ class _VideoProgressBarState
         if (!controller!.value.initialized || !enableProgressBarDrag) {
           return;
         }
-
-        seekToRelativePosition(details.globalPosition);
+        final Duration? position = _relativePosition(details.globalPosition);
+        if (position != null) {
+          _cancelUpdateBlockTimer();
+          _dragTarget = position;
+          setState(() => lastSeek = position);
+        }
 
         if (widget.onDragUpdate != null) {
           widget.onDragUpdate!();
@@ -101,11 +108,7 @@ class _VideoProgressBarState
           return;
         }
 
-        if (_controllerWasPlaying) {
-          betterPlayerController?.play();
-          shouldPlayAfterDragEnd = true;
-        }
-        _setupUpdateBlockTimer();
+        _seekToDragTarget();
 
         if (widget.onDragEnd != null) {
           widget.onDragEnd!();
@@ -138,6 +141,7 @@ class _VideoProgressBarState
   }
 
   void _setupUpdateBlockTimer() {
+    _cancelUpdateBlockTimer();
     _updateBlockTimer = Timer(const Duration(milliseconds: 1000), () {
       lastSeek = null;
       _cancelUpdateBlockTimer();
@@ -157,31 +161,37 @@ class _VideoProgressBarState
     }
   }
 
-  void seekToRelativePosition(Offset globalPosition) async {
-    final RenderObject? renderObject = context.findRenderObject();
-    if (renderObject != null) {
-      final box = renderObject as RenderBox;
-      final Offset tapPos = box.globalToLocal(globalPosition);
-      final double relative = tapPos.dx / box.size.width;
-      if (relative > 0) {
-        final Duration position = controller!.value.duration! * relative;
-        lastSeek = position;
-        await betterPlayerController!.seekTo(position);
-        onFinishedLastSeek();
-        if (relative >= 1) {
-          lastSeek = controller!.value.duration;
-          await betterPlayerController!.seekTo(controller!.value.duration!);
-          onFinishedLastSeek();
-        }
-      }
+  Future<void> _seekToDragTarget() async {
+    final Duration? target = _dragTarget;
+    _dragTarget = null;
+    if (target != null) {
+      await betterPlayerController!.seekTo(target);
     }
-  }
-
-  void onFinishedLastSeek() {
-    if (shouldPlayAfterDragEnd) {
-      shouldPlayAfterDragEnd = false;
+    if (_controllerWasPlaying) {
       betterPlayerController?.play();
     }
+    _setupUpdateBlockTimer();
+  }
+
+  void seekToRelativePosition(Offset globalPosition) async {
+    final Duration? position = _relativePosition(globalPosition);
+    if (position == null) {
+      return;
+    }
+    lastSeek = position;
+    await betterPlayerController!.seekTo(position);
+  }
+
+  Duration? _relativePosition(Offset globalPosition) {
+    final RenderObject? renderObject = context.findRenderObject();
+    final Duration? duration = controller!.value.duration;
+    if (renderObject == null || duration == null) {
+      return null;
+    }
+    final box = renderObject as RenderBox;
+    final double relative =
+        (box.globalToLocal(globalPosition).dx / box.size.width).clamp(0.0, 1.0);
+    return duration * relative;
   }
 }
 
